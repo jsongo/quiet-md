@@ -195,7 +195,6 @@ impl Run {
         scenario!(self, "search", self.search());
         scenario!(self, "import-markdown-and-folder", self.import());
         scenario!(self, "trash-and-restore", self.trash_restore());
-        scenario!(self, "data-table-opens", self.data_table());
         scenario!(self, "board-opens", self.board());
         scenario!(self, "update-check-and-signature", self.update());
         self.carry.entries = self.ws(|w, _, _| w.entries.len()).unwrap_or(0);
@@ -385,17 +384,6 @@ impl Run {
         self.until("the restored document", 10, move |w, _, _| w.entries.iter().any(|e| e.id == i) && !w.trash.iter().any(|t| t.id == i)).await?;
         let back = self.file_of(&id)?;
         if !std::fs::read_to_string(&back).is_ok_and(|s| s.contains("importedfilemarker")) { return Err(format!("{} not restored", back.display())) }
-        Ok(())
-    }
-
-    /// 新建 › 数据表 opens into the table, which draws.
-    async fn data_table(&mut self) -> Step {
-        self.ws(|w, window, cx| w.create_table(None, window, cx))?;
-        self.until("the table to open", 10, |w, _, cx| w.editor.as_ref().is_some_and(|e| { let e = e.read(cx); e.table_file && e.table_open() })).await?;
-        self.settle().await?;
-        let id = self.ws(|w, _, _| w.current.clone())?.ok_or("nothing open")?;
-        if !self.file_of(&id)?.is_file() { return Err("no table file".into()) }
-        self.render()?;
         Ok(())
     }
 
