@@ -196,7 +196,9 @@ pub fn rebuild(cx: &mut App) {
     let bindings: Vec<_> = s.base.iter().filter(|b| !s.custom.get(b.action().name()).is_some_and(|key| key.is_empty())).map(|b| {
         s.custom.get(b.action().name()).and_then(|key| load(key, b)).unwrap_or_else(|| b.clone())
     }).collect();
-    cx.clear_key_bindings(); cx.bind_keys(bindings);
+    // The window's own keys (a confirmation's ↩) are not edited here: keep them.
+    let keys = cx.key_bindings().borrow().bindings().filter(|b| !s.base.iter().any(|base| base.action().name() == b.action().name())).cloned().collect::<Vec<_>>();
+    cx.clear_key_bindings(); cx.bind_keys(keys.into_iter().chain(bindings));
 }
 
 /// Settings groups, in order.

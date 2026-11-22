@@ -25,7 +25,7 @@ const SAVE_DELAY: Duration = Duration::from_millis(500);
 const SAVE_MAX_DELAY: Duration = Duration::from_secs(2);
 
 actions!(workspace, [NewDoc, OpenFile, OpenFolder, ImportDoc, ImportFolder, ToggleSidebar, FocusSearch, FindInDoc, ReplaceInDoc, OpenSettings, OpenAbout, CheckForUpdates, GoHome, CloseWindow, Quit,
-    ReplayOnboarding, HideApp, HideOthers, ShowAll, Minimize, Zoom, ToggleFullScreen]);
+    ReplayOnboarding, HideApp, HideOthers, ShowAll, Minimize, Zoom, ToggleFullScreen, ConfirmEnter]);
 
 /// The menu bar, in the interface language.
 pub fn set_menus(cx: &mut App) {
@@ -116,6 +116,9 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-f", FindInDoc, None),
         KeyBinding::new("cmd-shift-h", ReplaceInDoc, None),
         KeyBinding::new("cmd-q", Quit, None),
+        // The confirmation dialogs' ↩ is bound by the window that shows one,
+        // ahead of the editor's newline.
+        KeyBinding::new("enter", ConfirmEnter, Some("Workspace")),
     ]);
     // macOS app and window keys. ⌥⌘H (隐藏其他) stays with the editor's
     // 应用上次的颜色, the Feishu shortcut; 隐藏其他 is in the menu. On Windows
@@ -354,6 +357,9 @@ pub struct Workspace {
     pub batch: Option<Vec<String>>,
     /// The open confirmation dialog.
     pub confirm: Option<Confirm>,
+    /// The confirmation dialogs' ↩: the action button. Bound while one is up
+    /// so ↩ can't travel on and put a newline in the document.
+    pub confirm_keys: Vec<KeyBinding>,
     /// The first-launch pages laid over the window again (⌘⌥⇧O, Settings › About).
     pub onboarding: Option<Entity<crate::onboarding::Onboarding>>,
     pub view: View,
@@ -613,6 +619,7 @@ impl Workspace {
             row_sub_bounds: Rc::new(Cell::new(None)),
             batch: None,
             confirm: None,
+            confirm_keys: Vec::new(),
             onboarding: None,
             view: View::Doc,
             home: Default::default(),
@@ -1787,6 +1794,7 @@ impl Render for Workspace {
         let doc_info = self.render_doc_info(cx);
         let history = self.render_history(cx);
         let confirm = self.render_confirm(cx);
+        self.sync_confirm_keys(confirm.is_some(), cx);
         let trash_menu = self.render_trash_menu(cx);
         let home_menus = self.render_home_menus(cx);
         let theme_menu = self.render_theme_menu(cx);
@@ -1872,6 +1880,11 @@ impl Render for Workspace {
             .on_action(|_: &Zoom, window, _| window.zoom_window())
             .on_action(|_: &ToggleFullScreen, window, _| window.toggle_fullscreen())
             .on_action(cx.listener(|w, _: &OpenSettings, _, cx| w.show_view(View::Settings, cx)))
+            // ↩ in a confirmation is its action button: the default choice.
+            .on_action(cx.listener(|w, _: &ConfirmEnter, window, cx| {
+                if w.confirm_enter() { w.confirm_ok(window, cx); }
+                cx.stop_propagation();
+            }))
             .on_action(cx.listener(|w, _: &ReplayOnboarding, window, cx| w.replay_onboarding(window, cx)))
             .on_action(cx.listener(|w, _: &OpenAbout, _, cx| w.open_settings(crate::settings::Page::About, cx)))
             .on_action(cx.listener(|w, _: &CheckForUpdates, _, cx| { w.open_settings(crate::settings::Page::About, cx); crate::update::check(true, cx); }))
