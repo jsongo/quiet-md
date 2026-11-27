@@ -36,13 +36,7 @@ pub struct SystemGh;
 
 impl GhCommand for SystemGh {
     fn run(&self, program: &str, args: &[&str]) -> std::io::Result<(i32, Vec<u8>, Vec<u8>)> {
-        let run = |program: &str| {
-            #[allow(unused_mut)]
-            let mut c = Command::new(program);
-            #[cfg(target_os = "windows")]
-            { use std::os::windows::process::CommandExt; c.creation_flags(0x0800_0000); }
-            c.args(args).output().map(|o| (o.status.code().unwrap_or(-1), o.stdout, o.stderr))
-        };
+        let run = |program: &str| command(program, args).output().map(|o| (o.status.code().unwrap_or(-1), o.stdout, o.stderr));
         let first = run(program);
         // Apps launched from a GUI do not necessarily inherit a shell's PATH.
         if program != "gh" || !matches!(&first, Err(e) if e.kind() == std::io::ErrorKind::NotFound) { return first }
@@ -51,6 +45,25 @@ impl GhCommand for SystemGh {
         }
         first
     }
+}
+
+/// gh's environment must not make setup and the REST token mean different
+/// accounts. A GUI also cannot answer a terminal prompt.
+fn command(program: &str, args: &[&str]) -> Command {
+    #[allow(unused_mut)]
+    let mut c = Command::new(program);
+    #[cfg(target_os = "windows")]
+    { use std::os::windows::process::CommandExt; c.creation_flags(0x0800_0000); }
+    c.args(args)
+        .env("GH_HOST", "github.com")
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("GH_NO_UPDATE_NOTIFIER", "1")
+        .env_remove("GH_REPO")
+        .env_remove("GH_TOKEN")
+        .env_remove("GITHUB_TOKEN")
+        .env_remove("GH_ENTERPRISE_TOKEN")
+        .env_remove("GITHUB_ENTERPRISE_TOKEN");
+    c
 }
 
 #[cfg(target_os = "macos")]
@@ -84,7 +97,10 @@ impl<C: GhCommand> Gh<C> {
             _ => {}
         }
         let out = self.run(&["auth", "status", "--hostname", "github.com"])?;
-        Ok(if out.0 == 0 { GhStatus::Ready } else { GhStatus::SignedOut })
+        if out.0 == 0 { return Ok(GhStatus::Ready) }
+        let msg = if out.2.is_empty() { text(out.1) } else { text(out.2) };
+        if msg.contains("not logged into") { Ok(GhStatus::SignedOut) }
+        else { Err(Error::Other(format!("gh auth status: {msg}"))) }
     }
 
     /// The account selected in gh, not a second login owned by Quiet.md.
@@ -98,7 +114,9 @@ impl<C: GhCommand> Gh<C> {
     /// gh keeps the credential in its own secure storage. It is never an
     /// argument, written to the library, or included in an error here.
     pub fn token(&self) -> Result<String> {
-        let out = self.ok(&["auth", "token", "--hostname", "github.com"])?;
+        let out = self.run(&["auth", "token", "--hostname", "github.com"])?;
+        // Never echo either output stream here: a partial credential is still sensitive.
+        if out.0 != 0 { return Err(Error::Auth("gh could not provide a token; run `gh auth login`".into())) }
         let token = text(out.1);
         if token.is_empty() || token.chars().any(char::is_whitespace) { return Err(Error::Auth("gh returned no usable token; run `gh auth login`".into())) }
         Ok(token)
@@ -180,10 +198,21 @@ mod tests {
     fn status_separates_missing_signed_out_and_ready() {
         let f = Fake::with([Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no gh"))]);
         assert_eq!(Gh::with_commands(&f, "gh").status(), Ok(GhStatus::Missing));
-        let f = Fake::with([ok("gh version 2.0"), fail(1, "not logged in")]);
+        let f = Fake::with([ok("gh version 2.0"), fail(1, "You are not logged into any GitHub hosts")]);
         assert_eq!(Gh::with_commands(&f, "gh").status(), Ok(GhStatus::SignedOut));
         let f = Fake::with([ok("gh version 2.0"), ok("")]);
         assert_eq!(Gh::with_commands(&f, "gh").status(), Ok(GhStatus::Ready));
+        let f = Fake::with([ok("gh version 2.0"), fail(1, "connection refused")]);
+        assert!(matches!(Gh::with_commands(&f, "gh").status(), Err(Error::Other(_))));
+    }
+
+    #[test]
+    fn system_commands_use_one_noninteractive_github_com_account() {
+        let c = command("gh", &["repo", "list"]);
+        let env = c.get_envs().map(|(k, v)| (k.to_string_lossy().into_owned(), v.map(|v| v.to_string_lossy().into_owned()))).collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(env.get("GH_HOST").and_then(|v| v.as_deref()), Some("github.com"));
+        assert_eq!(env.get("GH_PROMPT_DISABLED").and_then(|v| v.as_deref()), Some("1"));
+        for name in ["GH_REPO", "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"] { assert!(matches!(env.get(name), Some(None)), "{name}") }
     }
 
     #[test]
@@ -225,5 +254,8 @@ mod tests {
             let f = Fake::with([ok(token)]);
             assert!(matches!(Gh::with_commands(&f, "gh").token(), Err(Error::Auth(_))));
         }
+        let f = Fake::with([Ok((1, b"partial-secret".to_vec(), vec![]))]);
+        let error = Gh::with_commands(&f, "gh").token().unwrap_err().to_string();
+        assert!(!error.contains("partial-secret"), "{error}");
     }
 }
